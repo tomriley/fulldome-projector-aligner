@@ -9,8 +9,7 @@ struct Opts {
     /// Sets a custom config file. Could have been an Option<T> with no default too
     #[clap(short = "s", long = "surface", default_value = "dome")]
     surface: String,
-    /// Path to camera matrix and distortion coefficients (as produced by one-time camera calibration process)
-    /// e.g. out_camera_data-sony-sigma19mm.xml
+    /// Path to XML file containing camera intrinsic and extrinsic parameters
     #[clap(short = "xml", long = "camera-xml-file", default_value = "sigma19mm.xml")]
     camera_calib_xml: String,
     /// URL to control and show images on projector
