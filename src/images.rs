@@ -3,6 +3,8 @@ use opencv::types::*;
 use opencv::core::*;
 use opencv::imgcodecs;
 
+/// Produce a chessboard calibration pattern with the given dimentions. The dimentions refer
+/// to the internal "corners" on the board where four corners meet.
 pub fn chessboard(nx: i32, ny: i32) -> Mat {
     let mut inverted = Mat::default().unwrap();
     let square_size = 50;
@@ -34,6 +36,7 @@ pub fn chessboard(nx: i32, ny: i32) -> Mat {
     inverted
 }
 
+/// Produce a chessboard pattern and encode in the given image format.
 pub fn chessboard_image(nx: i32, ny: i32, format: &str) -> VectorOfu8 {
   let data = chessboard(nx, ny);
   encode_image(&data, format)

@@ -16,17 +16,16 @@ use lazy_static::*;
 mod math;
 mod photo;
 mod images;
-mod control;
+mod network;
 mod locator;
-mod surfaces;
+pub mod surfaces;
 mod camera_calibration;
-
-use camera_calibration::Calibration;
 
 pub struct PhysicalCamera {
     pub position: glm::Vec3,
     pub look_at: glm::Vec3,
-    pub up_dir: glm::Vec3
+    pub up_dir: glm::Vec3,
+    pub calibration: camera_calibration::Calibration,
 }
 
 struct VirtualCamera {
@@ -67,22 +66,30 @@ impl WarpResolution {
     }
 }
 
-pub fn warp_hemispherical_dome(radius: f32, camera_cal_fname: &str, control_url: Option<&str>, photo_url: Option<&str>, warp_res: WarpResolution, _verbosity: i32) {
-    info!("building warp for hemispherical dome...");
+
+pub fn produce_calibration(surface: surfaces::SurfaceType, camera_cal_fname: &str, control_url: Option<&str>, photo_url: Option<&str>, warp_res: WarpResolution, _verbosity: i32) {
     let calibration = camera_calibration::load_calibration_file(camera_cal_fname).expect("load of calibration XML failed");
-    let surface = surfaces::HemisphericalDome{radius: radius};
     let physical_camera = PhysicalCamera {    
         // camera position (should be suppied by user)
         position: vec3(0., 0., 0.),
         look_at: vec3(0., 1., 0.),
-        up_dir: vec3(0., 0., 1.)
+        up_dir: vec3(0., 0., 1.),
+        calibration: calibration
     };
     let projector = Projector {
         resolution_x: 1920,
         resolution_y: 1080
     };
     let camera_type = match photo_url {
-        Some(url) => photo::CameraType::RemoteHttpCamera {url: url.to_string()},
+        Some(url) => {
+            if url.starts_with("http") {
+                photo::CameraType::RemoteHttpCamera {url: url.to_string()}
+            } else if url.starts_with("file://") {
+                photo::CameraType::SingleImageFile {path: url[7..].to_string()}
+            } else {
+                panic!("Invalid photo-url argument")
+            }
+        }
         None => photo::CameraType::TetheredCamera
     };
     let mut virtual_camera = VirtualCamera {
@@ -91,37 +98,19 @@ pub fn warp_hemispherical_dome(radius: f32, camera_cal_fname: &str, control_url:
         up_dir: vec3(0., 1., 0.),
         fov: None,
     };
-    let scene_coords = locate_scene_coords(surface, physical_camera, &mut virtual_camera, calibration, control_url, camera_type, warp_res);
+    let scene_coords = locate_scene_coords(surface, physical_camera, control_url, camera_type, warp_res);
     let uv_coords = generate_uv_warp(scene_coords, &mut virtual_camera, &projector);
     let json = calibration_json_string(uv_coords, &virtual_camera, warp_res);
     println!("{}", json);
 }
 
-pub fn warp_wall(camera_cal_fname: &str, control_url: Option<&str>, photo_url: Option<&str>, warp_res: WarpResolution, _verbosity: i32) {
-    info!("builing warp for flat 3D wall...");
-    let calibration = camera_calibration::load_calibration_file(camera_cal_fname).expect("load of calibration XML failed");
-    let surface = surfaces::Wall {};
-    let physical_camera = PhysicalCamera {    
-        // camera position (should be suppied by user)
-        position: vec3(0., 0., 2.),
-        look_at: vec3(0., 0., 0.),
-        up_dir: vec3(0., 0., 1.)
-    };
-    let projector = Projector {
-        resolution_x: 1920,
-        resolution_y: 1080
-    };
-    //gen_warp(surface, physical_camera, projector, calibration, control_url, photo::CameraType::TetheredCamera, warp_res).unwrap();
-}
 
-fn locate_scene_coords<G>(geometry: G, physical_camera: PhysicalCamera, virtual_camera: &mut VirtualCamera, calibration: Calibration, control_url: Option<&str>, camera_type: photo::CameraType, warp_res: WarpResolution) -> Vec<glm::Vec3>
-    where G: surfaces::CameraToScene {
-
+fn locate_scene_coords(surface: surfaces::SurfaceType, physical_camera: PhysicalCamera, control_url: Option<&str>, camera_type: photo::CameraType, warp_res: WarpResolution) -> Vec<glm::Vec3> {
     // show chessboard image on first projector
     let chessboard = images::chessboard_image(warp_res.width, warp_res.height, ".png");
     match &control_url {
         Some(url) => {
-            control::post_image(&url, &chessboard.to_slice(), "png").unwrap();
+            network::post_image(&url, &chessboard.to_slice(), "png").unwrap();
         },
         None => {
             info!("Please display the full-screen chessboard pattern on the projector and press any key");
@@ -130,14 +119,14 @@ fn locate_scene_coords<G>(geometry: G, physical_camera: PhysicalCamera, virtual_
         }
     }
 
-    let photo = take_undistorted_photo(&calibration, camera_type).expect("failed to take photo");
+    let photo = take_undistorted_photo(&physical_camera.calibration, camera_type).expect("failed to take photo");
     let point_buffer = locate_chessboard_corners(&photo, warp_res).expect("failed to locate chessboard corners");
 
     let mut scene_coords = vec![];
 
     for point in point_buffer.iter() {
         // Convert point in camera space to a point in 3d world space
-        let scene_coord = geometry.camera_to_scene(&physical_camera, &calibration, *point, photo.cols(), photo.rows()).unwrap();
+        let scene_coord = surfaces::camera_to_scene(&surface, &physical_camera, *point, photo.cols(), photo.rows()).unwrap();
         scene_coords.push(scene_coord);
     }
 
@@ -200,8 +189,8 @@ fn calibration_json_string(uv_coords: Vec<glm::Vec2>, virtual_camera: &VirtualCa
 
 /// Given virtual camera details, calculate normalized screen position of the point in 3D space
 fn project_scene_point(scene_pos: glm::Vec3, virtual_camera: &VirtualCamera, projector_aspect_ratio: f32) -> Result<glm::Vec2, &'static str> {
-    let model = glm::ext::look_at(virtual_camera.position, virtual_camera.look_at.unwrap(), virtual_camera.up_dir);
-    let proj = glm::ext::perspective(glm::radians(virtual_camera.fov.expect("scene camera fov should have been calculated")), projector_aspect_ratio, 0.1, 100.);
+    let model = glm::ext::look_at(virtual_camera.position, virtual_camera.look_at.expect("look_at should have been calculated"), virtual_camera.up_dir);
+    let proj = glm::ext::perspective(glm::radians(virtual_camera.fov.expect("virtual camera fov should have been calculated")), projector_aspect_ratio, 0.1, 100.);
     
     let screen_pos = math::project(vec3(scene_pos.x, scene_pos.y, scene_pos.z), &model, &proj, vec4(0., 0., 1., 1.))?;
     if screen_pos.x < 0. || screen_pos.y < 0. || screen_pos.x > 1. || screen_pos.y > 1. {
@@ -221,7 +210,7 @@ fn locate_chessboard_corners(photo: &Mat, warp_res: WarpResolution) -> opencv::R
     let found = find_chessboard_corners(&photo, board_size, &mut point_buffer, CALIB_CB_ADAPTIVE_THRESH)?;
     
     // draw found chessboard corners to image file
-    if true {
+    if false {
         let mut color = Mat::default()?;
         cvt_color(&photo, &mut color, COLOR_GRAY2BGR, 1)?;
         draw_chessboard_corners(&mut color, board_size, &point_buffer, found)?;
@@ -240,8 +229,7 @@ fn locate_chessboard_corners(photo: &Mat, warp_res: WarpResolution) -> opencv::R
     Ok(point_buffer.iter().map(|pt| vec2(pt.x, pt.y)).collect())
 }
 
-
-fn take_undistorted_photo(calibration: &Calibration, camera_type: photo::CameraType) -> opencv::Result<Mat> {
+fn take_undistorted_photo(calibration: &camera_calibration::Calibration, camera_type: photo::CameraType) -> opencv::Result<Mat> {
     // take photo
     let photo_data = photo::capture_photo(camera_type);
     let photo = imgcodecs::imdecode(&photo_data, imgcodecs::IMREAD_COLOR)?;

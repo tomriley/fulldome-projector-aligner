@@ -1,5 +1,6 @@
 extern crate pretty_env_logger;
-use aligner::{warp_hemispherical_dome, warp_wall, WarpResolution};
+use aligner::{produce_calibration, WarpResolution};
+use aligner::surfaces;
 use clap::Clap;
 
 /// Projection warp and alignment generator
@@ -45,6 +46,14 @@ struct GenerateWarpCommand {
     radius: Option<f32>,
 }
 
+fn surface_type(surface: &str, opts: &GenerateWarpCommand) -> surfaces::SurfaceType {
+    match surface {
+        "dome" => surfaces::SurfaceType::HemisphericalDome {radius: opts.radius.expect("Please proide a dome radius in meters with -r")},
+        "wall" => surfaces::SurfaceType::Wall,
+        _ => panic!("Unknown surface type. Please specify 'dome' or 'wall'")
+    }
+}
+
 fn main() {
     pretty_env_logger::init();
     let opts: Opts = Opts::parse();
@@ -52,24 +61,14 @@ fn main() {
     // (as below), requesting just the name used, or both at the same time
     match opts.subcmd {
         SubCommand::GenerateWarpCommand(t) => {
-            match &opts.surface[..] {
-                "dome" => warp_hemispherical_dome(
-                    t.radius.expect("Please proide a dome radius in meters with -r"), // FIXME maybe dome radius is not required
-                    &opts.camera_calib_xml,
-                    opts.control_url.as_deref(),
-                    opts.photo_url.as_deref(),
-                    WarpResolution::parse(&opts.pattern_size).unwrap(),
-                    opts.verbosity
-                ),
-                "wall" => warp_wall(
-                    &opts.camera_calib_xml,
-                    opts.control_url.as_deref(),
-                    opts.photo_url.as_deref(),
-                    WarpResolution::parse(&opts.pattern_size).unwrap(),
-                    opts.verbosity
-                ),
-                _ => panic!("Unknown surface type. Please specify 'dome' or 'wall'")
-            };
+            produce_calibration(
+                surface_type(&opts.surface, &t),
+                &opts.camera_calib_xml,
+                opts.control_url.as_deref(),
+                opts.photo_url.as_deref(),
+                WarpResolution::parse(&opts.pattern_size).unwrap(),
+                opts.verbosity
+            );
         }
     }
 }
