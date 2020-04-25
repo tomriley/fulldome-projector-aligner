@@ -6,7 +6,6 @@ use glm::*;
 use glm::ext::*;
 use std::f32::consts;
 
-
 pub trait CameraToScene {
   // Convert a point in the camera image to a point on the projected upon 3d surface
   fn camera_to_scene(&self, camera: &PhysicalCamera, calibration: &Calibration, pt: glm::Vec2, image_width: i32, image_height: i32) -> Result<glm::Vec3, &'static str>;

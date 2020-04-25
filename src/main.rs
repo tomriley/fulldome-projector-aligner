@@ -10,7 +10,7 @@ struct Opts {
     #[clap(short = "s", long = "surface", default_value = "dome")]
     surface: String,
     /// Path to XML file containing camera intrinsic and extrinsic parameters
-    #[clap(short = "xml", long = "camera-xml-file", default_value = "sigma19mm.xml")]
+    #[clap(short = "xml", long = "camera-xml-file", default_value = "noop.xml")]
     camera_calib_xml: String,
     /// URL to control and show images on projector
     #[clap(long = "control-url")]
@@ -34,8 +34,6 @@ enum SubCommand {
     #[clap(name = "warp", version = "1.3", author = "Someone Else")]
     GenerateWarpCommand(GenerateWarpCommand),
 }
-
-
 
 /// Start process of algining and warping for a static virtual camera. Results in
 /// a camera "look at" coordinate in scene space and a UV matrix for warping the resulting
