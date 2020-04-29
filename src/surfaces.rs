@@ -4,6 +4,7 @@ use super::math::*;
 use glm::*;
 use glm::ext::*;
 use std::f32::consts;
+use log::{info, warn, debug, error};
 
 
 pub enum SurfaceType {
@@ -69,17 +70,20 @@ fn camera_to_scene_wall(camera: &PhysicalCamera, pt: glm::Vec2, image_width: i32
     // consider simpifying and inline this where it's needed
     // actually, maybe it's fine as this is only used for mapping the projected
     // points
-    let model = look_at(camera.position, camera.look_at, camera.up_dir);
+    let model = look_at(camera.position, camera.look_at + camera.position, camera.up_dir);
     let proj = perspective(radians(camera.calibration.fov), (image_width as f32) / (image_height as f32), 0.1_f32, 1000_f32);
     
-    let pt = un_project(vec3(pt.x, image_height as f32 - pt.y, 1.), // 1 means at the back of the depth range
+    // un_project could have bugs
+    let scene_pt = un_project(vec3(pt.x, image_height as f32 - pt.y, 1.), // 1 means at the back of the depth range
                         &model,
                         &proj,
                         vec4(0., 0., image_width as f32, image_height as f32))?;
     
     // now intersect with the XY plain
-    let zmag = (pt.z - camera.position.z).abs();
-    let scene_pt = ((pt - camera.position) / zmag) * (0. /*wall z*/ - camera.position.z).abs() + camera.position;
+    let zmag = (scene_pt.z - camera.position.z).abs();
+    let scene_pt2 = ((scene_pt - camera.position) / zmag) * (0. /*wall z*/ - camera.position.z).abs() + camera.position;
     
-    Ok(scene_pt)
+    debug!("scene 3d point for {},{} is {},{},{} (was {},{},{})", pt.x, pt.y, scene_pt2.x, scene_pt2.y, scene_pt2.z, scene_pt.x, scene_pt.y, scene_pt.z);
+
+    Ok(scene_pt2)
 }
