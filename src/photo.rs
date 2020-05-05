@@ -1,10 +1,11 @@
 
 use opencv::prelude::*;
 use opencv::highgui;
-use log::{warn, info};
+use log::{warn, info, error, debug};
 use std::fs::{File};
-use std::io::{Read};
-use std::process::Command;
+use std::io::{Read, ErrorKind};
+use tempfile::NamedTempFile;
+use std::{thread::sleep, process::{exit, Command}};
 
 pub enum CameraType {
     TetheredCamera,
@@ -51,18 +52,39 @@ fn take_photo() -> Mat {
     camera.download(&mut context, &capture, &mut file).unwrap();
     */
 
-    let output = Command::new("gphoto2")
-            .args(&["--capture-image-and-download", "--force-overwrite", "--filename", "my-photo.jpg"])
-            .output()
-            .expect("failed to execute process");
-
-    info!("gphoto2 stdout: {}", String::from_utf8(output.stdout).unwrap());
-    info!("gphoto2 stderr: {}", String::from_utf8(output.stderr).unwrap());
-    
+    // take the second of two photos because of issues with sony cameras
+    let file = NamedTempFile::new().unwrap();
+    let fpath = file.path().to_str().unwrap();
+    for _ in 0..2 {
+        let result = Command::new("gphoto2")
+                .args(&["--capture-image-and-download", "--force-overwrite", "--filename", fpath])
+                .output();
+        match result {
+            Ok(output) => {
+                debug!("gphoto2 stdout: {}", String::from_utf8(output.stdout).unwrap());
+                debug!("gphoto2 stderr: {}", String::from_utf8(output.stderr).unwrap());
+            }
+            Err(err) => {
+                match err.kind() {
+                    ErrorKind::NotFound => {
+                        error!("gphoto2 executable not found. Is the gphoto2 package not installed?");
+                        exit(-1);
+                    },
+                    _ => {
+                        error!("Error while running gphoto2: {},", err.to_string());
+                        exit(-1);
+                    }
+                };
+            }
+        }
+        
+        sleep(std::time::Duration::from_millis(1000));
+    }
+        
     let mut buffer = Vec::new();
-    let mut file = File::open("my-photo.jpg").unwrap();
+    let mut file = File::open(fpath).unwrap();
     file.read_to_end(&mut buffer).unwrap();
-    info!("returning image data");
+    info!("returning gphoto image data");
     Mat::from_slice(buffer.as_slice()).unwrap()
 }
 
