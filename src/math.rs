@@ -1,7 +1,7 @@
 
 use glm::*;
 
-pub fn project<T: BaseFloat>(object: Vector3<T>, model: &Matrix4<T>, proj: &Matrix4<T>, viewport: Vector4<T>) -> Result<Vector3<T>, &'static str> {
+pub fn project<T: BaseFloat>(object: Vector3<T>, model: &Matrix4<T>, proj: &Matrix4<T>, viewport: Vector4<T>) -> Vector3<T> {
   let mut tmp = object.extend(T::one());
   tmp = *model * tmp;
   tmp = *proj * tmp;
@@ -16,7 +16,7 @@ pub fn project<T: BaseFloat>(object: Vector3<T>, model: &Matrix4<T>, proj: &Matr
   tmp[0] = tmp[0] * viewport[2] + viewport[0];
   tmp[1] = tmp[1] * viewport[3] + viewport[1];
 
-  Ok(tmp.truncate(3))
+  tmp.truncate(3)
 }
 
 

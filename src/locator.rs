@@ -5,7 +5,6 @@ use opencv::core::*;
 use opencv::imgcodecs;
 use super::PhysicalCamera;
 use super::camera_calibration::Calibration;
-use log::{info, debug};
 use serde_json::json;
 use serde::Deserialize;
 use std::fs;
@@ -25,7 +24,7 @@ pub fn locate_aruco_marker(calibration: &Calibration, photo: &mut Mat, marker_si
     let mut ids = VectorOfi32::new();
     let mut corners = VectorOfVectorOfPoint2f::new();
     let mut rejected = VectorOfVectorOfPoint2f::new();
-    let dict = opencv::aruco::get_predefined_dictionary(opencv::aruco::PREDEFINED_DICTIONARY_NAME::DICT_6X6_250).unwrap();
+    let dict = opencv::aruco::get_predefined_dictionary(opencv::aruco::PREDEFINED_DICTIONARY_NAME::DICT_ARUCO_ORIGINAL).unwrap();
     let params = opencv::aruco::DetectorParameters::create().unwrap();
     
     // aruco lib can undistort for us so work on the original image...
@@ -48,8 +47,6 @@ pub fn locate_aruco_marker(calibration: &Calibration, photo: &mut Mat, marker_si
     } else if corners.len() > 1 {
         panic!("Multiple markers detected. Stopping.");
     }
-    //info!("Found 1 aruco marker, top-left corner at {}, {}\n", corners[0][0].x, corners[0][0].y);
-    
     let mut rvecs = VectorOfPoint3d::new();
     let mut tvecs = VectorOfPoint3d::new();
     let mut obj_points = VectorOfPoint3d::new(); // corners points of square
@@ -67,22 +64,13 @@ pub fn locate_aruco_marker(calibration: &Calibration, photo: &mut Mat, marker_si
     // TODO - sometimes the X axis is flipped - need a way to detect this and retry/fail
     // or just flip the axis if that fixes everything
 
-    //for (int i=0 ; i<ids.size() ; i++) {
-    //    opencv::aruco::drawAxis(original, cameraMatrix, distCoeffs, rvecs[i], tvecs[i], 0.03);
-    //}
-
- //   let rvecs = rvecs.iter().map(|pt| vec3(pt.x, pt.y, pt.z)).collect();
- //   let tvecs = tvecs.iter().map(|pt| vec3(pt.x, pt.y, pt.z)).collect();
-
     let mut rvec = rvecs.iter().nth(0).unwrap();
     let mut tvec = tvecs.iter().nth(0).unwrap();
 
-    // copy and convert to opengl axis layout
-    rvec.x = rvec.x;
+    // convert to opengl axis layout
     rvec.y = -rvec.y;
     rvec.z = -rvec.z;
     
-    tvec.x = tvec.x;
     tvec.y = -tvec.y;
     tvec.z = -tvec.z;
 
@@ -118,12 +106,11 @@ pub fn locate_aruco_marker(calibration: &Calibration, photo: &mut Mat, marker_si
     let dir = inv_rotation * glm::vec4(0., 0., -1., 1.);
     let up = inv_rotation * glm::vec4(0., 1., 0., 1.);
 
-    let json = location_json_string(&position.truncate(3), &dir.truncate(3), &up.truncate(3) , calibration.fov);
+    let json = location_json_string(&position.truncate(3), &dir.truncate(3), &up.truncate(3) , calibration.fov, marker_size);
     println!("{}", json);
 }
 
 pub fn update_physical_camera_location(physical_camera: &mut PhysicalCamera, json_fname: &str) {
-    
     let json_str = fs::read_to_string(json_fname).expect("camera location json file not found");
     let cl: CameraLocation = serde_json::from_str(json_str.as_str()).unwrap();
 
@@ -133,12 +120,13 @@ pub fn update_physical_camera_location(physical_camera: &mut PhysicalCamera, jso
 }
 
 
-fn location_json_string(position: &glm::Vec3, dir: &glm::Vec3, up: &glm::Vec3, fov: f32) -> String {
+fn location_json_string(position: &glm::Vec3, dir: &glm::Vec3, up: &glm::Vec3, fov: f32, marker_size: f32) -> String {
     let json = json!({
         "position": position.as_array(),
         "direction": dir.as_array(),
         "up": up.as_array(),
-        "fov": fov
+        "fov": fov,
+        "marker_size": marker_size
     });
 
     serde_json::to_string_pretty(&json).unwrap()

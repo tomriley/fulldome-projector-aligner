@@ -4,7 +4,7 @@ use super::math::*;
 use glm::*;
 use glm::ext::*;
 use std::f32::consts;
-use log::{info, warn, debug, error};
+use log::{debug};
 
 
 pub enum SurfaceType {
@@ -46,7 +46,7 @@ fn camera_to_scene_dome(corner_pt: glm::Vec2, image_width: i32, image_height: i3
     let real_v = angle1.cos(); // real distance of point from center of dome on XZ plane
     
     // angle of point around the Y axis
-    let angle2 = atan2(corner_pt.x, corner_pt.y);
+    let angle2 = corner_pt.x.atan2(corner_pt.y);
     
     // we use this to calculate the real X and Y coords
     let real_x = angle2.cos() * real_v;
@@ -56,6 +56,7 @@ fn camera_to_scene_dome(corner_pt: glm::Vec2, image_width: i32, image_height: i3
     
     if v > 1.0 {
         // point lies outside of dome
+
         Err("point passed to camera_to_scene_dome_fisheye seems to lie outside of the dome")
     } else {
         //NSLog(@"normalized dome height is %f", realY);

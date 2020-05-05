@@ -9,7 +9,8 @@ use glm::*;
 use glm::ext::*;
 use serde_json::json;
 use std::io::prelude::*;
-use log::{info, warn, debug, error};
+use std::fmt;
+use log::{info, warn, debug};
 use regex::Regex;
 use lazy_static::*;
 
@@ -30,36 +31,35 @@ pub struct PhysicalCamera {
 
 struct VirtualCamera {
     pub position: glm::Vec3,
+    pub up_dir: glm::Vec3, // always 0, 1, 0
     pub look_at: Option<glm::Vec3>, // this is calculated during calibration
-    pub up_dir: glm::Vec3,
     pub fov: Option<f32> // this is calculated during calibration
 }
 
-struct Projector {
-    resolution_x: i32,
-    resolution_y: i32,
-}
-
-impl Projector {
-    /// aspect ratio of projector output as a fraction (width/height)
-    fn aspect_ratio(&self) -> f32 {
-        self.resolution_x as f32 / self.resolution_y as f32
-    } 
-}
-
 #[derive(Clone, Copy)]
-pub struct WarpResolution {
+pub struct Resolution {
     width: i32,
     height: i32
 }
 
-impl WarpResolution {
-    pub fn parse(input: &str) -> Result<WarpResolution, String> {
+impl fmt::Display for Resolution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}x{}", self.width, self.height)
+    }
+}
+
+impl Resolution {
+    /// aspect ratio of projector output as a fraction (width/height)
+    fn aspect_ratio(&self) -> f32 {
+        self.width as f32 / self.height as f32
+    }
+
+    pub fn parse(input: &str) -> Result<Resolution, &'static str> {
         lazy_static! {
             static ref RE: Regex = Regex::new(r"(?P<width>\d+)x(?P<height>\d+)").unwrap();
         }
-        let caps = RE.captures(input).expect("Failed to parse warp resolution input string");
-        Ok(WarpResolution {
+        let caps = RE.captures(input).expect("Failed to parse resolution input string");
+        Ok(Resolution {
             width: caps["width"].parse().unwrap(),
             height: caps["height"].parse().unwrap()
         })
@@ -85,7 +85,7 @@ pub fn locate_camera(camera_cal_fname: &str, camera: Option<&str>, marker_size: 
     locator::locate_aruco_marker(&calibration, &mut decoded, marker_size);
 }
 
-pub fn produce_calibration(surface: surfaces::SurfaceType, camera_cal_fname: &str, control_url: Option<&str>, camera: Option<&str>, camera_location_fname: Option<&str>, warp_res: WarpResolution, _verbosity: i32) {
+pub fn produce_calibration(surface: surfaces::SurfaceType, camera_cal_fname: &str, control_url: Option<&str>, camera: Option<&str>, camera_location_fname: Option<&str>, eye_position: glm::Vec3, warp_res: Resolution, projector_res: Resolution, post_to: Option<&str>) {
     let calibration = camera_calibration::load_calibration_file(camera_cal_fname).expect("load of calibration XML failed");
     let mut physical_camera = PhysicalCamera {    
         // camera position (should be suppied by user)
@@ -94,10 +94,9 @@ pub fn produce_calibration(surface: surfaces::SurfaceType, camera_cal_fname: &st
         up_dir: vec3(0., 0., 1.),
         calibration: calibration
     };
-    let mut projector = Projector {
-        resolution_x: 1920,
-        resolution_y: 1080
-    };
+    if let Some(fname) = camera_location_fname {
+        locator::update_physical_camera_location(&mut physical_camera, fname);
+    }
     let camera_type = match camera {
         Some(url_or_path) => {
             if url_or_path.starts_with("http") {
@@ -110,39 +109,24 @@ pub fn produce_calibration(surface: surfaces::SurfaceType, camera_cal_fname: &st
         None => photo::CameraType::TetheredCamera
     };
     let mut virtual_camera = VirtualCamera {
-        position: vec3(0., 0., 0.),
+        position: eye_position,
         look_at: None,
-        up_dir: vec3(0., 1., 0.),
+        up_dir: vec3(0.0, 1.0, 0.0),
         fov: None,
     };
 
-    match surface {
-        surfaces::SurfaceType::Wall => {
-            //glm::Vector3 { x: -0.09818648, y: 1.274039, z: 1.5303341 } lookat = Vector4 { x: -0.09043919, y: 0.44045845, z: -0.8932061, w: 1.0 }, up = Vector4 { x: -0.03368546, y: 0.8950154, z: 0.4447614, w: 1.0 }
-            projector = Projector {
-                resolution_x: 1024,
-                resolution_y: 768
-            };
-            virtual_camera = VirtualCamera {
-                position: vec3(0., 0., 3.),
-                look_at: None,
-                up_dir: vec3(0., 1., 0.),
-                fov: None,
-            };
-        }
-        _ => ()
-    }
-
-    if let Some(fname) = camera_location_fname {
-        locator::update_physical_camera_location(&mut physical_camera, fname);
-    }
+    info!("projector resolution is {}", projector_res);
 
     let image_points = detect_image_points(&physical_camera, control_url, camera_type, warp_res);
     let scene_coords = locate_scene_coords(&surface, &physical_camera, &image_points);
     virtual_camera.look_at = Some(calculate_look_at(&surface, &image_points, &physical_camera));
-    let uv_coords = generate_uv_warp(scene_coords, &mut virtual_camera, &projector);
-    let json = calibration_json_string(uv_coords, &virtual_camera, warp_res);
-    println!("{}", json);
+    let uv_coords = generate_uv_warp_and_fov(&scene_coords, &mut virtual_camera, projector_res);
+    let json = calibration_json_string(&scene_coords, &uv_coords, &virtual_camera, warp_res);
+    if let Some(url) = post_to {
+        network::send_command(&url, "set_calibration", &json);
+    } else {
+        println!("{}", json);
+    }
 }
 
 
@@ -181,7 +165,7 @@ fn locate_scene_coords(surface: &surfaces::SurfaceType, physical_camera: &Physic
     scene_coords
 }
 
-fn detect_image_points(physical_camera: &PhysicalCamera, control_url: Option<&str>, camera_type: photo::CameraType, warp_res: WarpResolution) -> Vec<glm::Vec2> {
+fn detect_image_points(physical_camera: &PhysicalCamera, control_url: Option<&str>, camera_type: photo::CameraType, warp_res: Resolution) -> Vec<glm::Vec2> {
     // show chessboard image on first projector
     let chessboard = images::chessboard_image(warp_res.width, warp_res.height, ".png");
     match &control_url {
@@ -199,26 +183,27 @@ fn detect_image_points(physical_camera: &PhysicalCamera, control_url: Option<&st
     locate_chessboard_corners(&photo, warp_res).expect("failed to locate chessboard corners")
 }
 
-fn generate_uv_warp(scene_coords: Vec<glm::Vec3>, virtual_camera: &mut VirtualCamera, projector: &Projector) -> Vec<glm::Vec2> {
+fn generate_uv_warp_and_fov(scene_coords: &Vec<glm::Vec3>, virtual_camera: &mut VirtualCamera, projector_res: Resolution) -> Vec<glm::Vec2> {
     let trans = look_at(virtual_camera.position, virtual_camera.look_at.unwrap(), virtual_camera.up_dir);
     let mut max_rad = -1_f32;
     
     for scene_point in scene_coords.iter() {
         let eye_relative = trans * scene_point.extend(1.);
-        let rad = atan(eye_relative.y.abs() / eye_relative.z.abs());
+        //let rad = atan(eye_relative.y.abs() / eye_relative.z.abs());
+        let rad = eye_relative.y.abs().atan2(eye_relative.z.abs());
         if rad > max_rad { max_rad = rad; }
     }
     
-    virtual_camera.fov = Some(glm::degrees(max_rad) * 2.1); // FIXMEshouldn't really need to add 10% on here?
+    virtual_camera.fov = Some(glm::degrees(max_rad) * 2.001); // FIXMEshouldn't really need to add 10% on here?
     
     info!("eyePoint = {:?} lookAt = {:?} fovY = {:?}", virtual_camera.position, virtual_camera.look_at, virtual_camera.fov.unwrap());
 
     let mut uv_coords = vec![];
     for &scene_coord in scene_coords.iter() {
-        // project this scene coord into our viewer based pre-rendered viewport, returns normalized screen coord
-        // to support a dynamic eye point (e.g. head tracking), it's from this point that we would need to do
-        // calculations realtime within the render pipeline to shift the warp around. this would create a VR effect.
-        let target_screen_point = project_scene_point(scene_coord, &virtual_camera, projector.aspect_ratio()).unwrap();
+        let target_screen_point = project_scene_point(
+            scene_coord, &virtual_camera,
+            projector_res.aspect_ratio()
+        );
 
         // We now have the coord pixel of the render buffer that should be warped to the current chessboard corner
         uv_coords.push(target_screen_point);
@@ -226,42 +211,26 @@ fn generate_uv_warp(scene_coords: Vec<glm::Vec3>, virtual_camera: &mut VirtualCa
     uv_coords
 }
 
-fn calibration_json_string(uv_coords: Vec<glm::Vec2>, virtual_camera: &VirtualCamera, warp_res: WarpResolution) -> String {
-    // Build final "calibration" JSON document
-    let warp: Vec<&[f32; 2]> = uv_coords.iter().map(|p| p.as_array()).collect();
-
-    debug!("warp has {} coordinates", warp.len());
-
-    let json = json!({
-        "fov": virtual_camera.fov,
-        "eye": virtual_camera.position.as_array(),
-        "lookAt": virtual_camera.look_at.unwrap().as_array(),
-        "up": virtual_camera.up_dir.as_array(),
-        "warpResX": warp_res.width,
-        "warpResY": warp_res.height,
-        "warp": warp
-    });
-
-    serde_json::to_string_pretty(&json).unwrap()
-}
-
 /// Given virtual camera details, calculate normalized screen position of the point in 3D space
-fn project_scene_point(scene_pos: glm::Vec3, virtual_camera: &VirtualCamera, projector_aspect_ratio: f32) -> Result<glm::Vec2, &'static str> {
-    let model = glm::ext::look_at(virtual_camera.position, virtual_camera.look_at.expect("look_at should have been calculated"), virtual_camera.up_dir);
-    let proj = glm::ext::perspective(glm::radians(virtual_camera.fov.expect("virtual camera fov should have been calculated")), projector_aspect_ratio, 0.1, 100.);
+fn project_scene_point(scene_pos: glm::Vec3, virtual_camera: &VirtualCamera, projector_aspect_ratio: f32) -> glm::Vec2 {
+    let model = glm::ext::look_at(virtual_camera.position, virtual_camera.look_at.unwrap(), virtual_camera.up_dir);
+    let proj = glm::ext::perspective(
+        glm::radians(virtual_camera.fov.unwrap()),
+        projector_aspect_ratio,
+        0.1,
+        100.
+    );
     
-    let screen_pos = math::project(vec3(scene_pos.x, scene_pos.y, scene_pos.z), &model, &proj, vec4(0., 0., 1., 1.))?;
+    let screen_pos = math::project(vec3(scene_pos.x, scene_pos.y, scene_pos.z), &model, &proj, vec4(0., 0., 1., 1.));
     if screen_pos.x < 0. || screen_pos.y < 0. || screen_pos.x > 1. || screen_pos.y > 1. {
         warn!("a point in the scene space projected off screen (in project_scene_point)");
-        //screen_pos.x = screen_pos.x.max(0.);
-        //screen_pos.y = screen_pos.y.max(0.);
     }
     
-    Ok(screen_pos.truncate(2))
+    screen_pos.truncate(2)
 }
 
 
-fn locate_chessboard_corners(photo: &Mat, warp_res: WarpResolution) -> opencv::Result<Vec<glm::Vec2>> {
+fn locate_chessboard_corners(photo: &Mat, warp_res: Resolution) -> opencv::Result<Vec<glm::Vec2>> {
     // find chessboard corners
     let mut point_buffer = VectorOfPoint2f::new();
     let board_size = Size::new(warp_res.width, warp_res.height);
@@ -292,6 +261,15 @@ fn take_undistorted_photo(calibration: &camera_calibration::Calibration, camera_
     // take photo
     let photo_data = photo::capture_photo(camera_type);
     let photo = imgcodecs::imdecode(&photo_data, imgcodecs::IMREAD_COLOR)?;
+
+    // check dimentions match calibration data
+    if photo.rows() != calibration.image_height || photo.cols() != calibration.image_width {
+        panic!(
+            "photo dimentions ({}x{}) don't match width and height in calibration file ({}x{})",
+            photo.cols(), photo.rows(), calibration.image_width, calibration.image_height
+        );
+    }
+
     let mut undistorted_img = Mat::default()?;
     undistort(&photo, &mut undistorted_img, &calibration.camera_matrix, &calibration.distortion_coefficients, &calibration.camera_matrix)?;
     imgcodecs::imwrite("alignment-undistorted.jpg", &undistorted_img, &VectorOfi32::new())?;
@@ -304,4 +282,27 @@ fn take_undistorted_photo(calibration: &camera_calibration::Calibration, camera_
     bitwise_not(&gray, &mut inverted_img, &Mat::default().unwrap())?;
     imgcodecs::imwrite("alignment-inverted.jpg", &inverted_img, &VectorOfi32::new())?;
     Ok(inverted_img)
+}
+
+
+fn calibration_json_string(scene_coords: &Vec<glm::Vec3>, uv_coords: &Vec<glm::Vec2>, virtual_camera: &VirtualCamera, warp_res: Resolution) -> String {
+    // Build final "calibration" JSON document
+    let scene: Vec<&[f32; 3]> = scene_coords.iter().map(|p| p.as_array()).collect();
+    let warp: Vec<&[f32; 2]> = uv_coords.iter().map(|p| p.as_array()).collect();
+
+    debug!("scene has {} coordinates", scene.len());
+    debug!("warp has {} coordinates", warp.len());
+
+    let json = json!({
+        "fov": virtual_camera.fov,
+        "eye": virtual_camera.position.as_array(),
+        "lookAt": virtual_camera.look_at.unwrap().as_array(),
+        "up": virtual_camera.up_dir.as_array(),
+        "warpResX": warp_res.width,
+        "warpResY": warp_res.height,
+        "warp": warp,
+        "scene": scene
+    });
+
+    serde_json::to_string_pretty(&json).unwrap()
 }
